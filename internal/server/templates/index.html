@@ -1,0 +1,159 @@
+{{define "index"}}<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>go-mosaic</title>
+<style>
+  :root {
+    --bg: #000;
+    --panel: #0b0c0e;
+    --panel-2: #15171b;
+    --line: #24272e;
+    --fg: #e7e9ee;
+    --muted: #8f98a6;
+    --accent: #6ea8fe;
+    --ok: #3fcf8e;
+    --warn: #f0b429;
+    --err: #f2606a;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .bar {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--line);
+    background: rgba(0,0,0,.85);
+    backdrop-filter: blur(8px);
+    position: sticky; top: 0; z-index: 10;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: .2px; }
+  .brand .logo {
+    width: 18px; height: 18px; border-radius: 4px;
+    background:
+      linear-gradient(135deg, var(--accent) 0 50%, transparent 50% 100%),
+      linear-gradient(315deg, var(--ok) 0 50%, var(--warn) 50% 100%);
+  }
+  .brand small { color: var(--muted); font-weight: 400; }
+  .conn {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 12px; color: var(--muted);
+    padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px;
+  }
+  .conn::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .conn-on::before { background: var(--ok); box-shadow: 0 0 0 3px rgba(63,207,142,.15); }
+  .conn-off::before { background: var(--err); }
+  main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+  .layout { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 20px; align-items: start; }
+  @media (max-width: 900px) { .layout { grid-template-columns: minmax(0,1fr); } }
+  .frame {
+    display: block; background: var(--bg); border: 1px solid var(--line);
+    border-radius: var(--radius); overflow: hidden; line-height: 0;
+  }
+  .frame img { width: 100%; height: auto; display: block; }
+  .frame.empty {
+    display: grid; place-items: center; min-height: 320px; line-height: 1.5;
+    color: var(--muted); text-align: center; padding: 40px;
+  }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 16px; display: grid; gap: 14px;
+  }
+  .status {
+    display: inline-flex; align-items: center; gap: 8px; align-self: start;
+    font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .6px;
+    padding: 5px 11px; border-radius: 999px;
+    background: var(--panel-2); color: var(--muted); border: 1px solid var(--line);
+  }
+  .status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .status-ready { color: var(--ok); }
+  .status-building { color: var(--accent); }
+  .status-error { color: var(--err); }
+  .msg {
+    margin: 0; padding: 10px 12px; border-radius: 8px; font-size: 13px;
+    background: rgba(242,96,106,.1); border: 1px solid rgba(242,96,106,.3); color: #ffc9cd;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .msg-info { background: var(--panel-2); border-color: var(--line); color: var(--muted); }
+  dl { margin: 0; display: grid; grid-template-columns: auto minmax(0,1fr); gap: 7px 14px; font-size: 13px; }
+  dt { color: var(--muted); white-space: nowrap; }
+  dd { margin: 0; text-align: right; word-break: break-word; font-variant-numeric: tabular-nums; }
+  dd.path { font-size: 12px; opacity: .9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sep { height: 1px; background: var(--line); }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .btn {
+    flex: 1 1 auto; text-align: center; text-decoration: none;
+    padding: 8px 12px; border-radius: 8px; font-size: 13px; font-weight: 500;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--fg);
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .spin { animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .45 } }
+</style>
+</head>
+<body>
+<header class="bar">
+  <div class="brand"><span class="logo"></span> go-mosaic <small>photo mosaic</small></div>
+  <div id="conn" class="conn conn-off">connecting…</div>
+</header>
+
+<main>
+  <div class="layout" id="viewer">{{template "fragment" .}}</div>
+</main>
+
+<script>
+(function () {
+  var viewer = document.getElementById("viewer");
+  var conn = document.getElementById("conn");
+  var busy = false;
+
+  function setConn(cls, label) {
+    conn.className = "conn " + cls;
+    conn.textContent = label;
+  }
+
+  // Il markup arriva sempre dal server: qui lo si scarica e lo si sostituisce,
+  // precaricando la nuova immagine per non far sfarfallare il riquadro.
+  function refresh() {
+    if (busy) return;
+    busy = true;
+    fetch("/fragment", { cache: "no-store" })
+      .then(function (r) { return r.text(); })
+      .then(function (html) {
+        return new Promise(function (resolve) {
+          var holder = document.createElement("div");
+          holder.innerHTML = html;
+          var img = holder.querySelector("img");
+          if (!img) { resolve(html); return; }
+          var pre = new Image();
+          pre.onload = pre.onerror = function () { resolve(html); };
+          pre.src = img.getAttribute("src");
+        });
+      })
+      .then(function (html) { viewer.innerHTML = html; })
+      .catch(function () {})
+      .then(function () { busy = false; });
+  }
+
+  if (!window.EventSource) {
+    setConn("conn-off", "live updates unsupported");
+    setInterval(refresh, 3000);
+    return;
+  }
+
+  var es = new EventSource("/events");
+  es.onopen = function () { setConn("conn-on", "live"); };
+  es.onerror = function () { setConn("conn-off", "reconnecting…"); };
+  es.addEventListener("mosaic", function () { refresh(); });
+})();
+</script>
+</body>
+</html>{{end}}

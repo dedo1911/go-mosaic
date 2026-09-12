@@ -1,0 +1,92 @@
+{{define "preview"}}<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>go-mosaic — preview</title>
+<style>
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: #000; color: #8f98a6;
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: grid; place-items: center; overflow: hidden;
+  }
+  /* Il mosaico riempie sempre la finestra, ingrandito o rimpicciolito che sia,
+     mantenendo le proporzioni: object-fit contain lascia le bande nere sul lato
+     corto invece di deformarlo o ritagliarlo. */
+  img {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    object-fit: contain;
+  }
+  .empty { text-align: center; padding: 40px; }
+  .badge {
+    position: fixed; top: 12px; right: 12px;
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 12px; padding: 4px 10px; border-radius: 999px;
+    background: rgba(0,0,0,.6); border: 1px solid #24272e; color: #8f98a6;
+    opacity: 0; transition: opacity .4s ease;
+  }
+  .badge.show { opacity: 1; }
+  .badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #3fcf8e; }
+  .badge.off::before { background: #f2606a; }
+  a { color: #6ea8fe; }
+</style>
+</head>
+<body>
+{{if .HasImage}}
+<img id="shot" src="{{.ImageURL}}" alt="Generated mosaic">
+{{else}}
+<p class="empty" id="shot">{{.EmptyText}} <br><a href="/">back to the panel</a></p>
+{{end}}
+<div class="badge" id="badge">waiting</div>
+
+<script>
+(function () {
+  var badge = document.getElementById("badge");
+  var timer = null;
+
+  function flash(text, off) {
+    badge.textContent = text;
+    badge.className = "badge show" + (off ? " off" : "");
+    clearTimeout(timer);
+    if (!off) timer = setTimeout(function () { badge.className = "badge"; }, 1600);
+  }
+
+  // Nuova versione pronta: si precarica l'immagine e la si sostituisce solo a
+  // download completato, così l'anteprima non lampeggia mai.
+  function show(version) {
+    var next = new Image();
+    next.onload = function () {
+      var current = document.getElementById("shot");
+      if (current && current.tagName === "IMG") {
+        current.src = next.src;
+      } else {
+        var img = new Image();
+        img.id = "shot";
+        img.alt = "Generated mosaic";
+        img.src = next.src;
+        if (current) { current.replaceWith(img); } else { document.body.prepend(img); }
+      }
+      flash("build #" + version);
+    };
+    next.src = "/image?v=" + version;
+  }
+
+  if (!window.EventSource) { return; }
+  var es = new EventSource("/events");
+  var known = null;
+  es.addEventListener("hello", function (e) { known = e.data; });
+  es.addEventListener("mosaic", function (e) {
+    if (e.data === known) return; // stesso mosaico, solo un cambio di stato
+    known = e.data;
+    show(e.data);
+  });
+  es.onerror = function () { flash("reconnecting…", true); };
+})();
+</script>
+</body>
+</html>{{end}}

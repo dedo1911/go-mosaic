@@ -1,0 +1,61 @@
+{{define "fragment"}}
+<section>
+  {{if .HasImage}}
+  <a class="frame" href="{{.PreviewURL}}" title="Open the full-screen preview">
+    <img src="{{.ImageURL}}" alt="Generated mosaic">
+  </a>
+  {{else}}
+  <div class="frame empty{{if eq .Status "building"}} spin{{end}}">
+    <p>{{.EmptyText}}</p>
+  </div>
+  {{end}}
+</section>
+
+<aside class="panel">
+  <span class="status status-{{.Status}}">{{.StatusLabel}}</span>
+
+  {{if .Message}}<p class="msg{{if ne .Status "error"}} msg-info{{end}}">{{.Message}}</p>{{end}}
+
+  <dl>
+    <dt>Grid</dt><dd>{{.Grid}}</dd>
+    <dt>Resolution</dt><dd>{{.Resolution}}</dd>
+    <dt>Tile</dt><dd>{{.TileSize}}</dd>
+    <dt>Cells</dt><dd>{{.Cells}}</dd>
+  </dl>
+
+  <div class="sep"></div>
+
+  <dl>
+    <dt>Photos in library</dt><dd>{{.Photos}}</dd>
+    <dt>Photos used</dt><dd>{{.UniqueUsed}}</dd>
+    {{if .HasEmptyCells}}<dt>Empty cells</dt><dd>{{.EmptyCells}}</dd>{{end}}
+    <dt>Max reuse</dt><dd>{{.MaxReuse}}</dd>
+    <dt>Blend</dt><dd>{{.Blend}}</dd>
+  </dl>
+
+  <div class="sep"></div>
+
+  <dl>
+    <dt>Source</dt><dd class="path" title="{{.SourceDirFull}}">{{.SourceDir}}</dd>
+    <dt>Target</dt><dd class="path" title="{{.TargetPathFull}}">{{.TargetPath}}</dd>
+    <dt>Output</dt><dd class="path" title="{{.OutputPathFull}}">{{.OutputPath}}</dd>
+  </dl>
+
+  <div class="sep"></div>
+
+  <dl>
+    <dt>Build #</dt><dd>{{.Version}}</dd>
+    <dt>Duration</dt><dd>{{.Duration}}</dd>
+    <dt>Memory</dt><dd>{{.Memory}}</dd>
+    <dt>Updated</dt><dd>{{.UpdatedAt}}</dd>
+    <dt>Watch</dt><dd>{{if .Watching}}on{{else}}off{{end}}</dd>
+  </dl>
+
+  {{if .HasImage}}
+  <div class="actions">
+    <a class="btn" href="{{.PreviewURL}}">Preview</a>
+    <a class="btn" href="{{.DownloadURL}}" download>Download</a>
+  </div>
+  {{end}}
+</aside>
+{{end}}

@@ -1,0 +1,25 @@
+# Compiled binary
+/go-mosaic
+/go-mosaic.exe
+
+# Thumbnail cache
+.mosaic-cache
+*.cache
+
+# Your own photos and mosaics: never publish these by accident.
+# The repository ships no images, so ignoring them wholesale is safe here.
+/src/
+/photos/
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tif
+*.tiff
+*.webp
+
+# Editors and OS noise
+.DS_Store
+.idea/
+.vscode/
