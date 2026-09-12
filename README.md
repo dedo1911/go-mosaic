@@ -7,11 +7,15 @@ new version is ready.
 
 ## Install
 
+Grab a binary for your platform from the
+[latest release](https://github.com/dedo1911/go-mosaic/releases/latest), or
+build it yourself:
+
 ```bash
 go install github.com/dedo1911/go-mosaic@latest
 ```
 
-Or from a clone:
+From a clone:
 
 ```bash
 go build -o go-mosaic .
@@ -290,4 +294,4 @@ are in English.
 
 ## License
 
-TODO: pick one before publishing.
+[MIT](LICENSE) © Dario Emerson

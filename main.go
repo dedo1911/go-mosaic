@@ -42,6 +42,46 @@ Examples:
 Options:
 `
 
+// version viene impostata dal linker durante la release
+// (-ldflags "-X main.version=v1.2.3"). Compilando a mano resta vuota e si
+// ripiega sulle informazioni di build del modulo.
+var version string
+
+// buildVersion descrive la copia in esecuzione: il tag della release, oppure
+// la versione del modulo per chi installa con "go install", oppure la revisione
+// git per chi compila dal sorgente.
+func buildVersion() string {
+	if version != "" {
+		return version
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "dev"
+	}
+	if v := info.Main.Version; v != "" && v != "(devel)" {
+		return v
+	}
+
+	revision, dirty := "", ""
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+			if len(revision) > 7 {
+				revision = revision[:7]
+			}
+		case "vcs.modified":
+			if setting.Value == "true" {
+				dirty = "-dirty"
+			}
+		}
+	}
+	if revision == "" {
+		return "dev"
+	}
+	return revision + dirty
+}
+
 type config struct {
 	src       string
 	target    string
@@ -91,6 +131,8 @@ func parseFlags() (*config, error) {
 		fs.PrintDefaults()
 	}
 
+	showVersion := fs.Bool("version", false, "print the version and exit")
+
 	fs.StringVar(&cfg.src, "src", "", "folder holding the images used as tiles (required)")
 	fs.StringVar(&cfg.target, "target", "", "image to reproduce (required)")
 	fs.StringVar(&cfg.out, "out", "mosaic.jpg", "output file (.jpg or .png)")
@@ -116,6 +158,11 @@ func parseFlags() (*config, error) {
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return nil, err
+	}
+
+	if *showVersion {
+		fmt.Println("go-mosaic", buildVersion())
+		os.Exit(0)
 	}
 
 	if cfg.src == "" || cfg.target == "" {
