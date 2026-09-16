@@ -118,16 +118,82 @@ func TestUseAllWithFewerCellsThanPhotos(t *testing.T) {
 	}
 }
 
-// Con un limite di riutilizzo UseAll non si applica: è il limite a decidere.
-func TestUseAllIgnoredWithReuseLimit(t *testing.T) {
-	lib := libraryOfSimilarPhotos(t, 30)
-	res := buildWith(t, lib, 10, 10, func(o *Options) {
-		o.MaxReuse = 2
+// Con un limite di riutilizzo alto le foto più affini si prendono tutte le
+// celle: UseAll deve far comparire anche le altre, senza superare il limite.
+func TestUseAllWithReuseLimit(t *testing.T) {
+	const photos = 120
+	lib := libraryOfSimilarPhotos(t, photos)
+
+	plain := buildWith(t, lib, 20, 20, func(o *Options) { o.MaxReuse = 4 })
+	if plain.UniqueUsed >= photos {
+		t.Skipf("senza UseAll erano già tutte usate (%d): il caso non è significativo", plain.UniqueUsed)
+	}
+
+	res := buildWith(t, lib, 20, 20, func(o *Options) {
+		o.MaxReuse = 4
 		o.UseAll = true
 	})
+	if res.UniqueUsed != photos {
+		t.Errorf("usate %d foto su %d con UseAll e MaxReuse 4", res.UniqueUsed, photos)
+	}
 	for i, used := range res.debugUsage {
-		if used > 2 {
-			t.Fatalf("foto %d usata %d volte con MaxReuse 2", i, used)
+		if used > 4 {
+			t.Fatalf("foto %d usata %d volte con MaxReuse 4", i, used)
+		}
+	}
+	if res.EmptyCells != 0 {
+		t.Errorf("%d celle nere: 120 foto da 4 usi coprono 400 celle", res.EmptyCells)
+	}
+}
+
+// Con limite uno ogni foto compare già una volta sola: UseAll non deve
+// cambiare niente.
+func TestUseAllIsImplicitWithReuseOne(t *testing.T) {
+	lib := libraryOfSimilarPhotos(t, 120)
+	without := buildWith(t, lib, 20, 20, func(o *Options) { o.MaxReuse = 1 })
+	with := buildWith(t, lib, 20, 20, func(o *Options) {
+		o.MaxReuse = 1
+		o.UseAll = true
+	})
+	if without.UniqueUsed != 120 {
+		t.Fatalf("MaxReuse 1 da solo usa %d foto su 120", without.UniqueUsed)
+	}
+	for i := range without.Image.Pix {
+		if without.Image.Pix[i] != with.Image.Pix[i] {
+			t.Fatalf("UseAll ha cambiato il mosaico al byte %d", i)
+		}
+	}
+}
+
+// Con -reveal random e un limite le celle scoperte devono restare quelle
+// all'inizio dell'ordine casuale, anche con la passata in più di UseAll:
+// altrimenti il soggetto comparirebbe subito e le celle tornerebbero nere.
+func TestUseAllKeepsTheRandomReveal(t *testing.T) {
+	lib := libraryOfSimilarPhotos(t, 60)
+	res := buildWith(t, lib, 20, 20, func(o *Options) {
+		o.MaxReuse = 3
+		o.UseAll = true
+		o.Reveal = RevealRandom
+	})
+	if res.UniqueUsed != 60 {
+		t.Errorf("usate %d foto su 60", res.UniqueUsed)
+	}
+	const capacity = 60 * 3
+	if want := res.Geometry.Cells() - capacity; res.EmptyCells != want {
+		t.Fatalf("celle nere = %d, attese %d", res.EmptyCells, want)
+	}
+
+	order, _ := cellOrder(res.Geometry)
+	revealed := make(map[int32]bool, capacity)
+	for _, cell := range order[:capacity] {
+		revealed[cell] = true
+	}
+	for cell := 0; cell < res.Geometry.Cells(); cell++ {
+		r := res.Geometry.CellRect(cell%res.Geometry.Cols, cell/res.Geometry.Cols)
+		c := res.Image.RGBAAt(r.Min.X+r.Dx()/2, r.Min.Y+r.Dy()/2)
+		black := c.R == 0 && c.G == 0 && c.B == 0
+		if revealed[int32(cell)] == black {
+			t.Fatalf("cella %d: scoperta nell'ordine=%v ma nera=%v", cell, revealed[int32(cell)], black)
 		}
 	}
 }

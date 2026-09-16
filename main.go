@@ -147,7 +147,7 @@ func parseFlags() (*config, error) {
 	fs.IntVar(&cfg.maxReuse, "max-reuse", 1, "how many times a photo may be reused (0 = unlimited)")
 	fs.BoolVar(&cfg.adjacent, "allow-adjacent", false, "allow the same photo in two neighbouring cells")
 	fs.Float64Var(&cfg.variety, "variety", 0.25, "with unlimited reuse, how far from the best match to go in order to use a photo that has been picked less often, from 0 (always the closest) to 1 (spread across the whole library)")
-	fs.BoolVar(&cfg.useAll, "use-all", false, "make sure every photo in the library appears at least once (unlimited reuse only)")
+	fs.BoolVar(&cfg.useAll, "use-all", false, "make sure every photo in the library appears at least once, as long as the grid has enough cells")
 	fs.StringVar(&cfg.revealRaw, "reveal", "fit", "where photos go while cells are still black: fit puts each one where it matches best, so the subject shows early; random uncovers cells in a fixed random order, so the subject emerges only as the grid fills")
 	fs.IntVar(&cfg.cands, "candidates", 32, "candidate tiles evaluated per cell")
 	fs.BoolVar(&cfg.recurse, "recursive", true, "also look for images in subfolders")
@@ -198,9 +198,6 @@ func parseFlags() (*config, error) {
 	}
 	if cfg.variety < 0 || cfg.variety > 1 {
 		return nil, errors.New("-variety must be between 0 and 1")
-	}
-	if cfg.useAll && cfg.maxReuse > 0 {
-		return nil, errors.New("-use-all needs unlimited reuse: pass -max-reuse 0")
 	}
 	if cfg.maxReuse < 0 {
 		return nil, errors.New("-max-reuse cannot be negative")

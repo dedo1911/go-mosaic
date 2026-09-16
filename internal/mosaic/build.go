@@ -39,10 +39,9 @@ type Options struct {
 	// Reveal decide dove vanno le foto finché restano celle nere: dove si
 	// abbinano meglio, oppure in un ordine casuale fisso.
 	Reveal Reveal
-	// UseAll garantisce che ogni foto della libreria compaia almeno una volta:
-	// prima si riserva a ciascuna la sua cella migliore, poi si riempie il
-	// resto normalmente. Vale solo con riutilizzo illimitato, perché con un
-	// limite la copertura dipende già dal limite scelto.
+	// UseAll garantisce che ogni foto della libreria compaia almeno una volta,
+	// finché ci sono celle per tutte: prima si riserva a ciascuna una cella,
+	// poi si riempie il resto normalmente, rispettando MaxReuse se c'è.
 	UseAll bool
 	// Candidates è quante tessere candidate valutare per cella.
 	Candidates int
@@ -356,7 +355,14 @@ func assignTiles(cands []candidate, k int, tiles []*Tile, feats []Feature, g Geo
 	a.order, a.rank = cellOrder(g)
 
 	if opts.MaxReuse > 0 {
-		a.limited(opts.MaxReuse, opts.Reveal)
+		// Con un limite alto le foto più affini occuperebbero tutte le celle
+		// e le altre non comparirebbero mai: con UseAll ogni foto riceve prima
+		// una cella, e solo dopo si riempie il resto fino al limite. Con limite
+		// uno la seconda passata non ha niente da aggiungere.
+		if opts.UseAll && opts.MaxReuse > 1 {
+			a.limited(1, opts.Reveal, "Placing every photo")
+		}
+		a.limited(opts.MaxReuse, opts.Reveal, "Placing photos")
 		return a.assign, a.usage
 	}
 
@@ -367,7 +373,7 @@ func assignTiles(cands []candidate, k int, tiles []*Tile, feats []Feature, g Geo
 	// comunque gli abbinamenti migliori. La griglia finirà piena comunque,
 	// quindi l'ordine di scoperta qui non conta.
 	if opts.UseAll {
-		a.limited(1, RevealFit)
+		a.limited(1, RevealFit, "Placing every photo")
 	}
 
 	a.fillRemaining()
@@ -446,7 +452,7 @@ func (a *assignment) fillRemaining() {
 // prenderebbero tutte le foto migliori. Si considerano quindi globalmente le
 // coppie (cella, foto) partendo dalle più affini. Le celle che non ricevono
 // niente restano a -1, cioè nere.
-func (a *assignment) limited(limit int, reveal Reveal) {
+func (a *assignment) limited(limit int, reveal Reveal, phase string) {
 	k := a.k
 	candidateCells := a.hopefulCells(len(a.tiles)*limit, reveal)
 
@@ -455,7 +461,7 @@ func (a *assignment) limited(limit int, reveal Reveal) {
 		tile int32
 		dist float32
 	}
-	a.rep.start("Placing photos", len(candidateCells))
+	a.rep.start(phase, len(candidateCells))
 	pairs := make([]pair, 0, len(candidateCells)*k)
 	for _, cell := range candidateCells {
 		for _, c := range a.cands[int(cell)*k : (int(cell)+1)*k] {
@@ -476,7 +482,13 @@ func (a *assignment) limited(limit int, reveal Reveal) {
 		return cmp.Compare(x.tile, y.tile)
 	})
 
-	remaining := len(candidateCells)
+	// Una passata precedente può aver già occupato alcune celle candidate.
+	remaining := 0
+	for _, cell := range candidateCells {
+		if a.assign[cell] == -1 {
+			remaining++
+		}
+	}
 	for _, p := range pairs {
 		if remaining == 0 {
 			break

@@ -149,9 +149,8 @@ Two knobs against that:
   match: among the candidates inside it — the ones that look equivalent anyway —
   the least used photo wins. It costs nothing in cell coverage.
 - **`-use-all`** guarantees every photo appears at least once. Each photo is first
-  given its best cell (the same global assignment used by `-max-reuse`, with a
-  limit of one), then the rest of the grid is filled normally. On a large grid the
-  mosaic looks unchanged and the whole library is in there.
+  given a cell of its own, then the rest of the grid is filled normally. On a
+  large grid the mosaic looks unchanged and the whole library is in there.
 
 Measured on a 600-cell grid with a 479-photo library, all with unlimited reuse:
 
@@ -167,6 +166,14 @@ The more photos you force in, the worse each cell matches its colour, so the
 subject gets harder to read. `-use-all` is at its best on large grids, where the
 extra placements are a rounding error: on a 1000×1000 grid it puts all 479 photos
 in without visibly changing the result.
+
+`-use-all` works with a reuse limit too, and that is where the limit alone falls
+short: with `-max-reuse 3` the best-matching photos take their three turns and
+fill the grid before the others get one. On the same 600-cell grid, `-max-reuse 3`
+uses 233 of the 479 photos; adding `-use-all` uses all of them, still never more
+than three times each. With `-max-reuse 1` there is nothing to add — every photo
+already appears exactly once — and no setting can fit more photos than the grid
+has cells.
 
 ## Watch mode and the web page
 
@@ -243,7 +250,7 @@ terminal would cost more than the work itself.
 | `-max-reuse` | `1` | how many times a photo may repeat (`0` = unlimited); cells without a photo stay black |
 | `-allow-adjacent` | `false` | allow the same photo in two neighbouring cells |
 | `-variety` | `0.25` | with unlimited reuse, how far from the best match to go to pick a less used photo (0 to 1) |
-| `-use-all` | `false` | make sure every photo appears at least once (unlimited reuse only) |
+| `-use-all` | `false` | make sure every photo appears at least once, as long as the grid has enough cells |
 | `-reveal` | `fit` | where photos go while cells are still black: `fit` (where they match best) or `random` (fixed random order) |
 | `-candidates` | `32` | candidate tiles evaluated per cell |
 | `-recursive` | `true` | also look for images in subfolders |
