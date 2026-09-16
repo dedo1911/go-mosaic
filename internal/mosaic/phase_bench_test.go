@@ -52,3 +52,25 @@ func BenchmarkRenderFitParallel6000(b *testing.B) {
 		}
 	}
 }
+
+// Scelta delle celle promettenti su un cartello a tinta unita da un milione di
+// celle: con un ordinamento completo costava oltre un terzo di secondo.
+func BenchmarkBestCells1M(b *testing.B) {
+	const k, cells = 32, 1_000_000
+	g := Geometry{Cols: 1000, Rows: 1000}
+	cands := make([]candidate, cells*k)
+	for c := 0; c < cells; c++ {
+		d := float32(1)
+		if c%5 == 0 {
+			d = 2
+		}
+		cands[c*k] = candidate{dist: d}
+	}
+	a := &assignment{cands: cands, k: k, g: g}
+	a.order, a.rank = cellOrder(g)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		a.hopefulCells(1300, RevealFit)
+	}
+}

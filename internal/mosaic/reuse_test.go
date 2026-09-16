@@ -1,12 +1,14 @@
 package mosaic
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"image"
 	"image/color"
 	"math/rand"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -132,31 +134,67 @@ func TestFillerCellsStayBlack(t *testing.T) {
 	}
 }
 
-// hopefulCells scarta le celle che non potranno mai ricevere una foto, ma solo
-// quando la libreria è troppo piccola per coprire la griglia.
+// Con capienza sufficiente si considerano tutte le celle; altrimenti prima le
+// più affini, e a parità di affinità decide l'ordine casuale, non l'indice.
 func TestHopefulCells(t *testing.T) {
-	const k = 2
-	// Quattro celle, la migliore affinità in ordine inverso: 3, 2, 1, 0.
-	cands := make([]candidate, 4*k)
-	for cell := 0; cell < 4; cell++ {
-		cands[cell*k] = candidate{tile: 0, dist: float32(4 - cell)}
-		cands[cell*k+1] = candidate{tile: 1, dist: float32(10 + cell)}
+	const k, cells = 2, 4000
+	g := Geometry{Cols: 100, Rows: 40}
+	cands := make([]candidate, cells*k)
+	for cell := 0; cell < cells; cell++ {
+		// Tutte le celle identiche: il caso dello sfondo a tinta unita.
+		cands[cell*k] = candidate{tile: 0, dist: 1}
+		cands[cell*k+1] = candidate{tile: 1, dist: 2}
+	}
+	a := &assignment{cands: cands, k: k, g: g}
+	a.order, a.rank = cellOrder(g)
+
+	if got := a.hopefulCells(cells, RevealFit); len(got) != cells {
+		t.Errorf("capienza sufficiente: %d celle invece di %d", len(got), cells)
+	}
+	if got := a.hopefulCells(0, RevealFit); len(got) != cells {
+		t.Errorf("riuso illimitato: %d celle invece di %d", len(got), cells)
 	}
 
-	// Capienza sufficiente: si considerano tutte le celle, in ordine.
-	got := hopefulCells(cands, k, 4, 4)
-	if len(got) != 4 {
-		t.Fatalf("capienza sufficiente: %d celle invece di 4", len(got))
+	// Poche foto e celle tutte uguali: le celle scelte non devono essere le
+	// prime in ordine di lettura.
+	got := a.hopefulCells(100, RevealFit)
+	maxIndex := int32(0)
+	for _, cell := range got {
+		maxIndex = max(maxIndex, cell)
 	}
-	for i, cell := range got {
-		if int(cell) != i {
-			t.Errorf("ordine alterato: posizione %d contiene la cella %d", i, cell)
+	if int(maxIndex) < cells/2 {
+		t.Errorf("celle scelte tutte entro l'indice %d su %d: spareggio in ordine di lettura", maxIndex, cells)
+	}
+}
+
+func TestParseReveal(t *testing.T) {
+	for in, want := range map[string]Reveal{"": RevealFit, "fit": RevealFit, " Random ": RevealRandom} {
+		got, err := ParseReveal(in)
+		if err != nil || got != want {
+			t.Errorf("ParseReveal(%q) = %q, %v; atteso %q", in, got, err, want)
 		}
 	}
+	if _, err := ParseReveal("spiral"); err == nil {
+		t.Error("valore non valido accettato")
+	}
+}
 
-	// Riutilizzo illimitato (capienza 0 per convenzione): tutte le celle.
-	if got := hopefulCells(cands, k, 4, 0); len(got) != 4 {
-		t.Errorf("riuso illimitato: %d celle invece di 4", len(got))
+// L'ordine casuale dipende solo dalla griglia: rigenerando o riavviando deve
+// restare lo stesso, altrimenti le foto salterebbero a ogni aggiornamento.
+func TestCellOrderIsStable(t *testing.T) {
+	g := Geometry{Cols: 40, Rows: 22}
+	o1, r1 := cellOrder(g)
+	o2, _ := cellOrder(g)
+	for i := range o1 {
+		if o1[i] != o2[i] {
+			t.Fatalf("ordine diverso alla posizione %d", i)
+		}
+		if r1[o1[i]] != int32(i) {
+			t.Fatalf("rank incoerente per la cella %d", o1[i])
+		}
+	}
+	if o3, _ := cellOrder(Geometry{Cols: 41, Rows: 22}); o3[0] == o1[0] && o3[1] == o1[1] && o3[2] == o1[2] {
+		t.Error("griglie diverse con lo stesso ordine iniziale")
 	}
 }
 
@@ -202,6 +240,47 @@ func TestHugeGridPlacesEveryPhoto(t *testing.T) {
 	for i, used := range res.debugUsage {
 		if used > 1 {
 			t.Fatalf("foto %d usata %d volte con -max-reuse 1", i, used)
+		}
+	}
+}
+
+// bestCells usa uno heap scritto a mano: deve dare esattamente lo stesso
+// risultato di un ordinamento completo, anche con moltissimi pari merito.
+func TestBestCellsMatchesFullSort(t *testing.T) {
+	rng := rand.New(rand.NewSource(9))
+	for trial := 0; trial < 50; trial++ {
+		const k = 3
+		cols, rows := 5+rng.Intn(60), 5+rng.Intn(40)
+		g := Geometry{Cols: cols, Rows: rows}
+		cells := g.Cells()
+		cands := make([]candidate, cells*k)
+		levels := 1 + rng.Intn(6) // poche distanze distinte: tanti pareggi
+		for c := 0; c < cells; c++ {
+			cands[c*k].dist = float32(rng.Intn(levels))
+		}
+		a := &assignment{cands: cands, k: k, g: g}
+		a.order, a.rank = cellOrder(g)
+
+		keep := 1 + rng.Intn(cells)
+		got := a.bestCells(keep)
+
+		want := slices.Clone(a.order)
+		slices.SortFunc(want, func(x, y int32) int {
+			if c := cmp.Compare(cands[int(x)*k].dist, cands[int(y)*k].dist); c != 0 {
+				return c
+			}
+			return cmp.Compare(a.rank[x], a.rank[y])
+		})
+		want = want[:keep]
+
+		if len(got) != len(want) {
+			t.Fatalf("prova %d: %d celle invece di %d", trial, len(got), len(want))
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("prova %d (%dx%d, keep %d): posizione %d = cella %d, attesa %d",
+					trial, cols, rows, keep, i, got[i], want[i])
+			}
 		}
 	}
 }

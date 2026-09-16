@@ -96,6 +96,7 @@ type config struct {
 	adjacent  bool
 	variety   float64
 	useAll    bool
+	revealRaw string
 	cands     int
 	recurse   bool
 	workers   int
@@ -108,6 +109,7 @@ type config struct {
 
 	geometry   mosaic.GeometrySpec
 	fit        mosaic.Fit
+	reveal     mosaic.Reveal
 	addr       string
 	memoryPeak int64
 	decodeGate int64
@@ -146,6 +148,7 @@ func parseFlags() (*config, error) {
 	fs.BoolVar(&cfg.adjacent, "allow-adjacent", false, "allow the same photo in two neighbouring cells")
 	fs.Float64Var(&cfg.variety, "variety", 0.25, "with unlimited reuse, how far from the best match to go in order to use a photo that has been picked less often, from 0 (always the closest) to 1 (spread across the whole library)")
 	fs.BoolVar(&cfg.useAll, "use-all", false, "make sure every photo in the library appears at least once (unlimited reuse only)")
+	fs.StringVar(&cfg.revealRaw, "reveal", "fit", "where photos go while cells are still black: fit puts each one where it matches best, so the subject shows early; random uncovers cells in a fixed random order, so the subject emerges only as the grid fills")
 	fs.IntVar(&cfg.cands, "candidates", 32, "candidate tiles evaluated per cell")
 	fs.BoolVar(&cfg.recurse, "recursive", true, "also look for images in subfolders")
 	fs.IntVar(&cfg.workers, "workers", 0, "processing goroutines (0 = number of CPUs)")
@@ -186,6 +189,9 @@ func parseFlags() (*config, error) {
 	cfg.geometry.TilePx = cfg.tilePx
 	if cfg.fit, err = mosaic.ParseFit(cfg.fitRaw); err != nil {
 		return nil, err
+	}
+	if cfg.reveal, err = mosaic.ParseReveal(cfg.revealRaw); err != nil {
+		return nil, fmt.Errorf("-reveal: %w", err)
 	}
 	if cfg.blend < 0 || cfg.blend > 1 {
 		return nil, errors.New("-blend must be between 0 and 1")
@@ -533,6 +539,7 @@ func (a *app) buildOnce(ctx context.Context) error {
 		AllowAdjacent: cfg.adjacent,
 		Variety:       cfg.variety,
 		UseAll:        cfg.useAll,
+		Reveal:        cfg.reveal,
 		Candidates:    cfg.cands,
 		Workers:       cfg.workers,
 		Progress:      bars.report,

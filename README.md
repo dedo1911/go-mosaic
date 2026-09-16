@@ -109,6 +109,28 @@ This is a statement of fact, not a warning: black cells are a legitimate result.
 One single black tile covers all of them — with a million-cell grid, creating one
 per empty cell would mean comparing every cell against a million identical tiles.
 
+### Where photos land while cells are still black
+
+`-reveal` decides where photos go while the grid is incomplete:
+
+- **`fit`** (default) puts each photo where it matches best, so the subject shows
+  up early: on a white sign on black, the bright photos draw the lettering right
+  away.
+- **`random`** uncovers cells in a fixed random order, so the subject only emerges
+  as the grid fills, evenly across the whole image. The order depends only on the
+  grid, so it survives rebuilds and restarts: a cell that has a photo keeps one
+  as more photos arrive, it never goes black again.
+
+Once the grid is full the two modes produce the very same mosaic; only the path
+there differs. In both, cells that match equally well — every cell of a flat
+background, say — are picked in that random order rather than by position, so
+photos never pile up from the top-left corner row by row.
+
+With `random` the photos inside the uncovered cells are still rearranged to match
+best at every rebuild, so when a photo arrives some of the others swap places:
+on a 1296-cell grid holding 520 photos, one new photo moved 75 of them, against
+21 with `fit`.
+
 The default is `-max-reuse 1`: **every photo appears exactly once**, so you need
 as many photos as there are cells. With `-max-reuse N` a photo may repeat up to N
 times; with `-max-reuse 0` reuse is unlimited and the grid always fills up (the
@@ -222,6 +244,7 @@ terminal would cost more than the work itself.
 | `-allow-adjacent` | `false` | allow the same photo in two neighbouring cells |
 | `-variety` | `0.25` | with unlimited reuse, how far from the best match to go to pick a less used photo (0 to 1) |
 | `-use-all` | `false` | make sure every photo appears at least once (unlimited reuse only) |
+| `-reveal` | `fit` | where photos go while cells are still black: `fit` (where they match best) or `random` (fixed random order) |
 | `-candidates` | `32` | candidate tiles evaluated per cell |
 | `-recursive` | `true` | also look for images in subfolders |
 | `-workers` | CPUs | processing goroutines |

@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"math/rand/v2"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,6 +36,9 @@ type Options struct {
 	// 0 prende sempre il candidato più affine; 1 considera equivalenti tutti i
 	// candidati della cella e sceglie il meno usato.
 	Variety float64
+	// Reveal decide dove vanno le foto finché restano celle nere: dove si
+	// abbinano meglio, oppure in un ordine casuale fisso.
+	Reveal Reveal
 	// UseAll garantisce che ogni foto della libreria compaia almeno una volta:
 	// prima si riserva a ciascuna la sua cella migliore, poi si riempie il
 	// resto normalmente. Vale solo con riutilizzo illimitato, perché con un
@@ -263,51 +268,123 @@ func topK(f *Feature, tiles []*Tile, out []candidate) {
 	}
 }
 
+// Reveal decide dove vanno le foto finché la griglia non è completa, cioè
+// finché restano celle nere. A griglia piena le due modalità danno lo stesso
+// mosaico: cambia solo il percorso per arrivarci.
+type Reveal string
+
+const (
+	// RevealFit mette ogni foto dove si abbina meglio: il soggetto del target
+	// si riconosce già con poche foto.
+	RevealFit Reveal = "fit"
+	// RevealRandom scopre le celle in un ordine casuale fisso: il soggetto
+	// emerge solo man mano che la griglia si riempie.
+	RevealRandom Reveal = "random"
+)
+
+// ParseReveal valida il valore passato da CLI.
+func ParseReveal(s string) (Reveal, error) {
+	switch Reveal(strings.ToLower(strings.TrimSpace(s))) {
+	case "", RevealFit:
+		return RevealFit, nil
+	case RevealRandom:
+		return RevealRandom, nil
+	}
+	return "", fmt.Errorf("invalid reveal %q (use fit or random)", s)
+}
+
+// cellOrder restituisce un ordine casuale ma riproducibile delle celle, e la
+// posizione di ciascuna in quell'ordine.
+//
+// Serve a spareggiare le celle equivalenti. Su un target a tinta unita, come
+// una scritta bianca su fondo nero, tutte le celle di sfondo hanno la stessa
+// firma e l'abbinamento non ha motivo di preferirne una: spareggiando per
+// indice le foto finivano in ordine di lettura, riempiendo le prime righe da
+// sinistra a destra.
+//
+// Il seme dipende solo dalla griglia, così l'ordine resta lo stesso fra una
+// rigenerazione e l'altra e fra un avvio e l'altro.
+func cellOrder(g Geometry) (order, rank []int32) {
+	cells := g.Cells()
+	order = make([]int32, cells)
+	for i := range order {
+		order[i] = int32(i)
+	}
+	rng := rand.New(rand.NewPCG(uint64(g.Cols), uint64(g.Rows)))
+	rng.Shuffle(cells, func(i, j int) { order[i], order[j] = order[j], order[i] })
+
+	rank = make([]int32, cells)
+	for pos, cell := range order {
+		rank[cell] = int32(pos)
+	}
+	return order, rank
+}
+
+// assignment raccoglie lo stato condiviso dalle fasi di assegnazione.
+type assignment struct {
+	cands []candidate
+	k     int
+	tiles []*Tile
+	feats []Feature
+	g     Geometry
+	opts  Options
+	rep   *reporter
+
+	order []int32 // celle in ordine casuale riproducibile
+	rank  []int32 // posizione di ogni cella in order
+
+	assign []int32 // foto assegnata a ogni cella, -1 se ancora libera
+	usage  []int   // quante volte è stata usata ogni foto
+}
+
 // assignTiles decide quale tessera va in quale cella.
 func assignTiles(cands []candidate, k int, tiles []*Tile, feats []Feature, g Geometry, opts Options, rep *reporter) ([]int32, []int) {
-	cells := g.Cells()
-	assign := make([]int32, cells)
-	for i := range assign {
-		assign[i] = -1
+	a := &assignment{
+		cands:  cands,
+		k:      k,
+		tiles:  tiles,
+		feats:  feats,
+		g:      g,
+		opts:   opts,
+		rep:    rep,
+		assign: make([]int32, g.Cells()),
+		usage:  make([]int, len(tiles)),
 	}
-	usage := make([]int, len(tiles))
-
-	neighbourConflict := func(cell int, tile int32) bool {
-		if opts.AllowAdjacent {
-			return false
-		}
-		cx := cell % g.Cols
-		if cx > 0 && assign[cell-1] == tile {
-			return true
-		}
-		if cell >= g.Cols && assign[cell-g.Cols] == tile {
-			return true
-		}
-		if cx < g.Cols-1 && assign[cell+1] == tile {
-			return true
-		}
-		if cell+g.Cols < cells && assign[cell+g.Cols] == tile {
-			return true
-		}
-		return false
+	for i := range a.assign {
+		a.assign[i] = -1
 	}
+	a.order, a.rank = cellOrder(g)
 
 	if opts.MaxReuse > 0 {
-		assignLimited(cands, k, tiles, feats, g, opts.MaxReuse, assign, usage, neighbourConflict, rep)
-		return assign, usage
+		a.limited(opts.MaxReuse, opts.Reveal)
+		return a.assign, a.usage
 	}
 
 	// Riutilizzo libero. Se è stato chiesto di usarle tutte, si comincia
 	// riservando a ogni foto la sua cella migliore — la stessa assegnazione
 	// globale del percorso con limite, con limite uno — e solo dopo si riempie
 	// il resto. Così nessuna foto resta fuori, ma il grosso del mosaico usa
-	// comunque gli abbinamenti migliori.
+	// comunque gli abbinamenti migliori. La griglia finirà piena comunque,
+	// quindi l'ordine di scoperta qui non conta.
 	if opts.UseAll {
-		assignLimited(cands, k, tiles, feats, g, 1, assign, usage, neighbourConflict, rep)
+		a.limited(1, RevealFit)
 	}
 
-	fillRemaining(cands, k, cells, opts, assign, usage, neighbourConflict)
-	return assign, usage
+	a.fillRemaining()
+	return a.assign, a.usage
+}
+
+// conflict dice se la foto è già in una cella confinante.
+func (a *assignment) conflict(cell int, tile int32) bool {
+	if a.opts.AllowAdjacent {
+		return false
+	}
+	cols, cells := a.g.Cols, len(a.assign)
+	cx := cell % cols
+	return (cx > 0 && a.assign[cell-1] == tile) ||
+		(cell >= cols && a.assign[cell-cols] == tile) ||
+		(cx < cols-1 && a.assign[cell+1] == tile) ||
+		(cell+cols < cells && a.assign[cell+cols] == tile)
 }
 
 // fillRemaining assegna a ogni cella ancora libera il suo candidato migliore.
@@ -318,90 +395,85 @@ func assignTiles(cands []candidate, k int, tiles []*Tile, feats []Feature, g Geo
 // banda di tolleranza attorno al miglior abbinamento e, fra i candidati che ci
 // rientrano — quelli praticamente equivalenti a occhio — si sceglie quello
 // usato meno finora.
-func fillRemaining(cands []candidate, k, cells int, opts Options, assign []int32, usage []int, conflict func(int, int32) bool) {
-	tol := opts.Variety
-	if tol < 0 {
-		tol = 0
-	}
-	if tol > 1 {
-		tol = 1
-	}
+//
+// Le celle si visitano in ordine casuale: in ordine di lettura la rotazione fra
+// foto equivalenti disegnerebbe righe riconoscibili.
+func (a *assignment) fillRemaining() {
+	tol := min(max(a.opts.Variety, 0), 1)
+	k := a.k
 
-	for cell := 0; cell < cells; cell++ {
-		if assign[cell] != -1 {
+	for _, c := range a.order {
+		cell := int(c)
+		if a.assign[cell] != -1 {
 			continue
 		}
-		row := cands[cell*k : (cell+1)*k]
+		row := a.cands[cell*k : (cell+1)*k]
 		limit := row[0].dist
 		if tol > 0 {
 			limit += float32(tol) * (row[len(row)-1].dist - row[0].dist)
 		}
 
 		chosen := int32(-1)
-		for _, c := range row {
-			if conflict(cell, c.tile) {
+		for _, cand := range row {
+			if a.conflict(cell, cand.tile) {
 				continue
 			}
 			if chosen < 0 {
-				chosen = c.tile
-				if c.dist > limit {
+				chosen = cand.tile
+				if cand.dist > limit {
 					break // fuori banda: non c'è niente di meglio da valutare
 				}
 				continue
 			}
-			if c.dist > limit {
+			if cand.dist > limit {
 				break
 			}
-			if usage[c.tile] < usage[chosen] {
-				chosen = c.tile
+			if a.usage[cand.tile] < a.usage[chosen] {
+				chosen = cand.tile
 			}
 		}
 		if chosen < 0 {
 			chosen = row[0].tile // tutti in conflitto: si ripiega sul migliore
 		}
-		assign[cell] = chosen
-		usage[chosen]++
+		a.assign[cell] = chosen
+		a.usage[chosen]++
 	}
 }
 
-// assignLimited assegna le celle rispettando un tetto di riutilizzo per foto.
+// limited assegna le celle rispettando un tetto di riutilizzo per foto.
 //
 // L'ordine conta: assegnando in ordine di lettura, le prime celle si
 // prenderebbero tutte le foto migliori. Si considerano quindi globalmente le
 // coppie (cella, foto) partendo dalle più affini. Le celle che non ricevono
-// niente restano a -1.
-func assignLimited(cands []candidate, k int, tiles []*Tile, feats []Feature, g Geometry, limit int, assign []int32, usage []int, conflict func(int, int32) bool, rep *reporter) {
-	cells := g.Cells()
-
-	// Quando le celle sono molte più di quante ne possa coprire la libreria,
-	// solo quelle con l'abbinamento migliore riceveranno una foto: costruire e
-	// ordinare le coppie di tutto il milione sarebbe lavoro buttato.
-	candidateCells := hopefulCells(cands, k, cells, len(tiles)*limit)
+// niente restano a -1, cioè nere.
+func (a *assignment) limited(limit int, reveal Reveal) {
+	k := a.k
+	candidateCells := a.hopefulCells(len(a.tiles)*limit, reveal)
 
 	type pair struct {
 		cell int32
 		tile int32
 		dist float32
 	}
-	rep.start("Placing photos", len(candidateCells))
+	a.rep.start("Placing photos", len(candidateCells))
 	pairs := make([]pair, 0, len(candidateCells)*k)
 	for _, cell := range candidateCells {
-		for _, c := range cands[int(cell)*k : (int(cell)+1)*k] {
+		for _, c := range a.cands[int(cell)*k : (int(cell)+1)*k] {
 			pairs = append(pairs, pair{cell: cell, tile: c.tile, dist: c.dist})
 		}
-		rep.add()
+		a.rep.add()
 	}
-	slices.SortFunc(pairs, func(a, b pair) int {
-		switch {
-		case a.dist < b.dist:
-			return -1
-		case a.dist > b.dist:
-			return 1
-		case a.cell != b.cell:
-			return int(a.cell - b.cell)
-		default:
-			return int(a.tile - b.tile)
+	// A parità di distanza decide l'ordine casuale delle celle, non il loro
+	// indice: altrimenti su uno sfondo uniforme le foto si accumulerebbero
+	// dall'angolo in alto a sinistra.
+	slices.SortFunc(pairs, func(x, y pair) int {
+		if c := cmp.Compare(x.dist, y.dist); c != 0 {
+			return c
 		}
+		if c := cmp.Compare(a.rank[x.cell], a.rank[y.cell]); c != 0 {
+			return c
+		}
+		return cmp.Compare(x.tile, y.tile)
 	})
 
 	remaining := len(candidateCells)
@@ -409,27 +481,26 @@ func assignLimited(cands []candidate, k int, tiles []*Tile, feats []Feature, g G
 		if remaining == 0 {
 			break
 		}
-		if assign[p.cell] != -1 || usage[p.tile] >= limit {
+		if a.assign[p.cell] != -1 || a.usage[p.tile] >= limit {
 			continue
 		}
-		if conflict(int(p.cell), p.tile) {
+		if a.conflict(int(p.cell), p.tile) {
 			continue
 		}
-		assign[p.cell] = p.tile
-		usage[p.tile]++
+		a.assign[p.cell] = p.tile
+		a.usage[p.tile]++
 		remaining--
 	}
-
 	if remaining == 0 {
 		return
 	}
 
-	// Foto rimaste senza posto perché i loro candidati erano tutti occupati.
-	// Si riparte dalle stesse celle, già ordinate dalla più promettente, così
-	// che finiscano dove rendono meglio.
-	avail := make([]int32, 0, len(tiles))
-	for i := range tiles {
-		if usage[i] < limit {
+	// Foto rimaste senza posto perché non comparivano fra le candidate di
+	// nessuna cella libera. Si riparte dalle celle candidate, già nell'ordine
+	// in cui conviene riempirle.
+	avail := make([]int32, 0, len(a.tiles))
+	for i := range a.tiles {
+		if a.usage[i] < limit {
 			avail = append(avail, int32(i))
 		}
 	}
@@ -437,57 +508,122 @@ func assignLimited(cands []candidate, k int, tiles []*Tile, feats []Feature, g G
 		if len(avail) == 0 {
 			break
 		}
-		if assign[cell] != -1 {
+		if a.assign[cell] != -1 {
 			continue
 		}
 		bestIdx, bestDist := 0, float64(-1)
 		for i, ti := range avail {
-			d := feats[cell].Distance(&tiles[ti].Feature)
+			d := a.feats[cell].Distance(&a.tiles[ti].Feature)
 			if bestDist < 0 || d < bestDist {
 				bestIdx, bestDist = i, d
 			}
 		}
 		t := avail[bestIdx]
-		assign[cell] = t
-		usage[t]++
-		if usage[t] >= limit {
+		a.assign[cell] = t
+		a.usage[t]++
+		if a.usage[t] >= limit {
 			avail = append(avail[:bestIdx], avail[bestIdx+1:]...)
 		}
 	}
 }
 
-// hopefulCells restituisce le celle che vale la pena considerare per
-// l'assegnazione globale: tutte, se la libreria ha capienza sufficiente,
-// altrimenti solo quelle il cui abbinamento migliore è più promettente.
-//
-// Il margine è generoso (quattro volte la capienza) perché una cella può
-// perdere la sua foto ideale a favore di una cella ancora più affine.
-func hopefulCells(cands []candidate, k, cells, capacity int) []int32 {
-	all := func() []int32 {
-		out := make([]int32, cells)
-		for i := range out {
-			out[i] = int32(i)
-		}
-		return out
-	}
+// hopefulCells restituisce le celle che possono ricevere una foto, già
+// nell'ordine in cui conviene considerarle.
+func (a *assignment) hopefulCells(capacity int, reveal Reveal) []int32 {
+	cells := len(a.order)
 	if capacity <= 0 || capacity >= cells {
-		return all()
-	}
-	keep := capacity * 4
-	if keep < 1024 {
-		keep = 1024
-	}
-	if keep >= cells {
-		return all()
+		return a.order // la griglia si riempirà tutta
 	}
 
-	order := all()
-	// Ordinare un milione di indici costa una frazione dell'ordinare trenta
-	// milioni di coppie, ed è l'unico modo per sapere quali celle scartare.
-	slices.SortFunc(order, func(a, b int32) int {
-		return cmp.Compare(cands[int(a)*k].dist, cands[int(b)*k].dist)
+	if reveal == RevealRandom {
+		// Le celle si scoprono nell'ordine casuale fissato: una foto in più
+		// scopre una cella in più e quelle già scoperte restano tali. Il
+		// soggetto emerge così in modo uniforme man mano che la griglia si
+		// riempie, invece di comparire subito dove le foto si abbinano meglio.
+		return a.order[:capacity]
+	}
+
+	// Solo le celle con l'abbinamento migliore riceveranno una foto: costruire
+	// e ordinare le coppie di tutto il milione sarebbe lavoro buttato. Il
+	// margine è generoso (quattro volte la capienza) perché una cella può
+	// perdere la sua foto ideale a favore di una cella ancora più affine.
+	return a.bestCells(min(max(capacity*4, 1024), cells))
+}
+
+// bestCells restituisce le keep celle con l'abbinamento migliore, a parità di
+// abbinamento quelle che vengono prima nell'ordine casuale, già ordinate.
+//
+// Non ordina tutte le celle: su un cartello a tinta unita un milione di celle
+// hanno la stessa distanza, e ordinarle con lo spareggio costava più di un
+// terzo di secondo. Si scorrono invece una volta, in ordine di indice così da
+// leggere i candidati in sequenza, tenendo le migliori in uno heap di massimo:
+// quasi tutte le celle costano un confronto con la peggiore tenuta.
+func (a *assignment) bestCells(keep int) []int32 {
+	type item struct {
+		dist float32
+		rank int32
+		cell int32
+	}
+	// better dice se x va considerata prima di y.
+	better := func(x, y item) bool {
+		if x.dist != y.dist {
+			return x.dist < y.dist
+		}
+		return x.rank < y.rank
+	}
+
+	k := a.k
+	heap := make([]item, 0, keep)
+	for cell := range a.rank {
+		it := item{dist: a.cands[cell*k].dist, rank: a.rank[cell], cell: int32(cell)}
+		if len(heap) < keep {
+			// Inserimento: la peggiore risale verso la cima.
+			heap = append(heap, it)
+			for i := len(heap) - 1; i > 0; {
+				parent := (i - 1) / 2
+				if !better(heap[parent], heap[i]) {
+					break
+				}
+				heap[parent], heap[i] = heap[i], heap[parent]
+				i = parent
+			}
+			continue
+		}
+		if !better(it, heap[0]) {
+			continue // peggiore di tutte quelle già tenute
+		}
+		// Sostituisce la peggiore e la fa scendere al suo posto.
+		heap[0] = it
+		for i := 0; ; {
+			worst, left := i, 2*i+1
+			if left < len(heap) && better(heap[worst], heap[left]) {
+				worst = left
+			}
+			if right := left + 1; right < len(heap) && better(heap[worst], heap[right]) {
+				worst = right
+			}
+			if worst == i {
+				break
+			}
+			heap[i], heap[worst] = heap[worst], heap[i]
+			i = worst
+		}
+	}
+
+	slices.SortFunc(heap, func(x, y item) int {
+		if better(x, y) {
+			return -1
+		}
+		if better(y, x) {
+			return 1
+		}
+		return 0
 	})
-	return order[:keep]
+	out := make([]int32, len(heap))
+	for i, it := range heap {
+		out[i] = it.cell
+	}
+	return out
 }
 
 // compose incolla una tessera nella cella, eventualmente miscelandola con il
