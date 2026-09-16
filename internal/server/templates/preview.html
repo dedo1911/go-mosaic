@@ -49,6 +49,12 @@
   var badge = document.getElementById("badge");
   var timer = null;
 
+  // Chiave del mosaico mostrato: istanza del server più versione. Viene dal
+  // render lato server, così il primo "hello" non ricarica un'immagine che è
+  // già a schermo.
+  var known = {{.EventKey}};
+  var lost = false;
+
   function flash(text, off) {
     badge.textContent = text;
     badge.className = "badge show" + (off ? " off" : "");
@@ -57,8 +63,10 @@
   }
 
   // Nuova versione pronta: si precarica l'immagine e la si sostituisce solo a
-  // download completato, così l'anteprima non lampeggia mai.
-  function show(version) {
+  // download completato, così l'anteprima non lampeggia mai. Se l'immagine non
+  // c'è ancora (il server riavviato sta ancora generando) resta quella vecchia
+  // fino all'evento successivo.
+  function show(key) {
     var next = new Image();
     next.onload = function () {
       var current = document.getElementById("shot");
@@ -71,21 +79,43 @@
         img.src = next.src;
         if (current) { current.replaceWith(img); } else { document.body.prepend(img); }
       }
-      flash("build #" + version);
+      flash("build #" + key.slice(key.lastIndexOf("-") + 1));
     };
-    next.src = "/image?v=" + version;
+    next.src = "/image?v=" + encodeURIComponent(key);
+  }
+
+  // "hello" e "mosaic" portano la stessa chiave: basta confrontarla. Dopo un
+  // riavvio l'istanza è diversa, quindi l'immagine si aggiorna anche se il
+  // numero di versione è ripartito da uno.
+  function update(key) {
+    if (key === known) return;
+    known = key;
+    show(key);
   }
 
   if (!window.EventSource) { return; }
-  var es = new EventSource("/events");
-  var known = null;
-  es.addEventListener("hello", function (e) { known = e.data; });
-  es.addEventListener("mosaic", function (e) {
-    if (e.data === known) return; // stesso mosaico, solo un cambio di stato
-    known = e.data;
-    show(e.data);
-  });
-  es.onerror = function () { flash("reconnecting…", true); };
+
+  function connect() {
+    var es = new EventSource("/events");
+    es.onopen = function () {
+      if (lost) {
+        lost = false;
+        flash("live");
+      }
+    };
+    es.onerror = function () {
+      lost = true;
+      flash("reconnecting…", true);
+      // Di norma il browser riprova da solo; se invece ha chiuso lo stream
+      // per sempre, lo si riapre a mano.
+      if (es.readyState === EventSource.CLOSED) {
+        setTimeout(connect, 2000);
+      }
+    };
+    es.addEventListener("hello", function (e) { update(e.data); });
+    es.addEventListener("mosaic", function (e) { update(e.data); });
+  }
+  connect();
 })();
 </script>
 </body>

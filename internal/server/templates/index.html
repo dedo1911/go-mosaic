@@ -113,7 +113,10 @@
 (function () {
   var viewer = document.getElementById("viewer");
   var conn = document.getElementById("conn");
+  var rendered = {{.EventKey}};
+  var connectedBefore = false;
   var busy = false;
+  var again = false;
 
   function setConn(cls, label) {
     conn.className = "conn " + cls;
@@ -122,8 +125,14 @@
 
   // Il markup arriva sempre dal server: qui lo si scarica e lo si sostituisce,
   // precaricando la nuova immagine per non far sfarfallare il riquadro.
+  // Un aggiornamento che arriva mentre ne è in corso un altro non va perso:
+  // lo si rifà subito dopo, altrimenti il pannello resterebbe allo stato
+  // intermedio.
   function refresh() {
-    if (busy) return;
+    if (busy) {
+      again = true;
+      return;
+    }
     busy = true;
     fetch("/fragment", { cache: "no-store" })
       .then(function (r) { return r.text(); })
@@ -140,7 +149,13 @@
       })
       .then(function (html) { viewer.innerHTML = html; })
       .catch(function () {})
-      .then(function () { busy = false; });
+      .then(function () {
+        busy = false;
+        if (again) {
+          again = false;
+          refresh();
+        }
+      });
   }
 
   if (!window.EventSource) {
@@ -149,10 +164,25 @@
     return;
   }
 
-  var es = new EventSource("/events");
-  es.onopen = function () { setConn("conn-on", "live"); };
-  es.onerror = function () { setConn("conn-off", "reconnecting…"); };
-  es.addEventListener("mosaic", function () { refresh(); });
+  function connect() {
+    var es = new EventSource("/events");
+    es.onopen = function () { setConn("conn-on", "live"); };
+    es.onerror = function () {
+      setConn("conn-off", "reconnecting…");
+      if (es.readyState === EventSource.CLOSED) {
+        setTimeout(connect, 2000);
+      }
+    };
+    es.addEventListener("hello", function (e) {
+      // Dopo una riconnessione il server può essere un processo nuovo, con
+      // altre impostazioni: si ridisegna sempre. Al primo collegamento solo se
+      // qualcosa è cambiato fra il render della pagina e l'apertura dello stream.
+      if (connectedBefore || e.data !== rendered) refresh();
+      connectedBefore = true;
+    });
+    es.addEventListener("mosaic", function () { refresh(); });
+  }
+  connect();
 })();
 </script>
 </body>

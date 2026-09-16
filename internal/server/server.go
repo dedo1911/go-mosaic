@@ -5,7 +5,9 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"html/template"
@@ -53,11 +55,12 @@ type State struct {
 
 // Server tiene lo stato corrente e i client collegati via SSE.
 type Server struct {
-	mu    sync.RWMutex
-	state State
-	tmpl  *template.Template
-	subs  map[chan int64]struct{}
-	log   *log.Logger
+	mu       sync.RWMutex
+	state    State
+	tmpl     *template.Template
+	subs     map[chan int64]struct{}
+	log      *log.Logger
+	instance string
 }
 
 // New prepara il server (senza metterlo in ascolto).
@@ -70,11 +73,29 @@ func New(logger *log.Logger) (*Server, error) {
 		logger = log.Default()
 	}
 	return &Server{
-		tmpl:  tmpl,
-		subs:  make(map[chan int64]struct{}),
-		state: State{Status: "idle"},
-		log:   logger,
+		tmpl:     tmpl,
+		subs:     make(map[chan int64]struct{}),
+		state:    State{Status: "idle"},
+		log:      logger,
+		instance: newInstanceID(),
 	}, nil
+}
+
+// newInstanceID distingue un avvio dall'altro. I numeri di versione ripartono
+// da uno a ogni avvio, quindi da soli non bastano: dopo un riavvio il browser
+// si riconnetteva, riceveva "1" come prima e concludeva che il mosaico era lo
+// stesso, anche se nel frattempo erano cambiate le impostazioni.
+func newInstanceID() string {
+	var b [6]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// eventKey identifica un mosaico in modo univoco anche fra un avvio e l'altro.
+func (s *Server) eventKey(version int64) string {
+	return fmt.Sprintf("%s-%d", s.instance, version)
 }
 
 // Update modifica lo stato e avvisa i browser collegati.
@@ -226,7 +247,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	h.Set("Connection", "keep-alive")
 	h.Set("X-Accel-Buffering", "no")
 
-	fmt.Fprintf(w, "retry: 2000\nevent: hello\ndata: %d\n\n", version)
+	fmt.Fprintf(w, "retry: 2000\nevent: hello\ndata: %s\n\n", s.eventKey(version))
 	flusher.Flush()
 
 	ping := time.NewTicker(25 * time.Second)
@@ -237,7 +258,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case v := <-ch:
-			fmt.Fprintf(w, "event: mosaic\ndata: %d\n\n", v)
+			fmt.Fprintf(w, "event: mosaic\ndata: %s\n\n", s.eventKey(v))
 			flusher.Flush()
 		case <-ping.C:
 			fmt.Fprint(w, ": ping\n\n")
@@ -253,6 +274,7 @@ type view struct {
 	Message     string
 	Version     int64
 	HasImage    bool
+	EventKey    string // identifica il mosaico mostrato, anche fra un avvio e l'altro
 	ImageURL    string // byte grezzi dell'ultimo mosaico
 	PreviewURL  string // pagina di anteprima che si aggiorna da sola
 	DownloadURL string
@@ -290,6 +312,7 @@ func (s *Server) view() view {
 
 	v := view{
 		Status:         st.Status,
+		EventKey:       s.eventKey(st.Version),
 		PreviewURL:     "/mosaic",
 		Message:        st.Message,
 		Version:        st.Version,
@@ -331,7 +354,9 @@ func (s *Server) view() view {
 	}
 
 	if v.HasImage {
-		v.ImageURL = fmt.Sprintf("/image?v=%d", st.Version)
+		// La chiave entra nell'URL: dopo un riavvio "/image?v=1" sarebbe lo
+		// stesso indirizzo di prima e il browser non ricaricherebbe l'immagine.
+		v.ImageURL = "/image?v=" + v.EventKey
 		v.DownloadURL = v.ImageURL + "&download=1"
 	} else if v.EmptyText == "" {
 		if st.Status == "error" {

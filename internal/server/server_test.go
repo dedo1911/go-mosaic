@@ -46,7 +46,7 @@ func TestIndexRendersState(t *testing.T) {
 		t.Fatalf("status = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"go-mosaic", "ready", "80 × 60", "3840 × 2160 px", "1,234", "/image?v=7", "1.5 s"} {
+	for _, want := range []string{"go-mosaic", "ready", "80 × 60", "3840 × 2160 px", "1,234", "/image?v=" + s.eventKey(7), "1.5 s"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("la pagina non contiene %q", want)
 		}
@@ -71,7 +71,7 @@ func TestFragmentShowsCountersAndLinks(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/fragment", nil))
 	body := rec.Body.String()
-	for _, want := range []string{"Empty cells", "293", `href="/mosaic"`, `src="/image?v=3"`, "1×"} {
+	for _, want := range []string{"Empty cells", "293", `href="/mosaic"`, `src="/image?v=` + s.eventKey(3) + `"`, "1×"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("il pannello non contiene %q", want)
 		}
@@ -120,7 +120,7 @@ func TestPreviewPageIsServerRendered(t *testing.T) {
 		t.Fatalf("content-type = %q", ct)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{`src="/image?v=12"`, "EventSource(\"/events\")", "background: #000"} {
+	for _, want := range []string{`src="/image?v=` + s.eventKey(12) + `"`, "EventSource(\"/events\")", "background: #000"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("l'anteprima non contiene %q", want)
 		}
@@ -217,11 +217,72 @@ func TestEventsNotifyNewVersion(t *testing.T) {
 
 	select {
 	case ev := <-done:
-		if !strings.Contains(ev, "event: mosaic") || !strings.Contains(ev, "data: 42") {
+		if !strings.Contains(ev, "event: mosaic") || !strings.Contains(ev, "data: "+s.eventKey(42)) {
 			t.Fatalf("evento inatteso: %q", ev)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("nessun evento SSE ricevuto dopo l'aggiornamento")
+	}
+}
+
+// Il cuore del bug sul riavvio: due avvii con la stessa versione devono
+// produrre chiavi diverse, altrimenti il browser riconnesso non si accorge che
+// il mosaico è cambiato.
+func TestEventKeyDiffersAcrossRestarts(t *testing.T) {
+	first, second := newTestServer(t), newTestServer(t)
+	if first.instance == second.instance {
+		t.Fatal("due avvii hanno lo stesso identificativo di istanza")
+	}
+	if first.eventKey(1) == second.eventKey(1) {
+		t.Fatalf("stessa versione, stessa chiave dopo il riavvio: %q", first.eventKey(1))
+	}
+	if first.eventKey(1) == first.eventKey(2) {
+		t.Fatal("versioni diverse della stessa istanza con la stessa chiave")
+	}
+}
+
+// Il primo evento dello stream deve portare la chiave completa, ed entrambe le
+// pagine devono conoscere la chiave con cui sono state renderizzate.
+func TestHelloAndPagesShareTheKey(t *testing.T) {
+	s := newTestServer(t)
+	s.Update(func(st *State) {
+		st.Status = "ready"
+		st.Version = 5
+		st.Image = []byte("jpeg")
+	})
+	key := s.eventKey(5)
+
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	reader := bufio.NewReader(resp.Body)
+	var hello strings.Builder
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("lettura SSE: %v", err)
+		}
+		if line == "\n" {
+			break
+		}
+		hello.WriteString(line)
+	}
+	if !strings.Contains(hello.String(), "data: "+key) {
+		t.Errorf("hello senza la chiave %q: %q", key, hello.String())
+	}
+
+	for _, path := range []string{"/", "/mosaic"} {
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		// html/template rende la chiave come stringa JavaScript tra virgolette.
+		if !strings.Contains(rec.Body.String(), `"`+key+`"`) {
+			t.Errorf("%s non incorpora la chiave %q nello script", path, key)
+		}
 	}
 }
 

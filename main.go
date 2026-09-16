@@ -295,23 +295,13 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := a.rebuild(ctx); err != nil {
-		if ctx.Err() != nil {
-			return nil
-		}
-		if !cfg.watch && cfg.addr == "" {
-			return err
-		}
-		logger.Printf("build failed: %v", err)
-	}
-
-	if !cfg.watch && cfg.addr == "" {
-		return nil
-	}
-
 	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
 
+	// Il server parte prima della generazione iniziale. Chi riavvia l'app per
+	// cambiare un'impostazione ritrova subito la pagina, che mostra la
+	// generazione in corso invece di restare in riconnessione per tutta la
+	// scansione; e una porta già occupata si scopre all'istante, non dopo.
 	if cfg.addr != "" {
 		wg.Add(1)
 		go func() {
@@ -323,7 +313,18 @@ func run() error {
 		}()
 	}
 
-	if cfg.watch {
+	if err := a.rebuild(ctx); err != nil && ctx.Err() == nil {
+		if !cfg.watch && cfg.addr == "" {
+			return err
+		}
+		logger.Printf("build failed: %v", err)
+	}
+
+	if !cfg.watch && cfg.addr == "" {
+		return nil
+	}
+
+	if cfg.watch && ctx.Err() == nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
