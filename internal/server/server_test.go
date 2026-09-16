@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -127,15 +128,57 @@ func TestPreviewPageIsServerRendered(t *testing.T) {
 	}
 }
 
+// La preview si proietta: senza immagine deve restare nera, senza testi né
+// link. L'unico elemento previsto è l'avviso di connessione, vuoto e nascosto
+// finché la connessione c'è.
 func TestPreviewPageWithoutImage(t *testing.T) {
 	s := newTestServer(t)
+	s.Update(func(st *State) { st.Status = "building" })
+
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/mosaic", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "Waiting for the first build") {
-		t.Errorf("anteprima senza immagine inattesa: %s", body)
+	body := rec.Body.String()
+	for _, unwanted := range []string{"<a ", "<p", "Waiting for the first build", "Building the mosaic", "back to the panel"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("la preview senza immagine mostra %q", unwanted)
+		}
+	}
+	if !strings.Contains(body, `<div class="badge" id="badge"></div>`) {
+		t.Error("l'avviso di connessione deve partire vuoto")
+	}
+	if !strings.Contains(body, "EventSource(\"/events\")") {
+		t.Error("senza immagine la preview deve comunque restare in ascolto")
+	}
+}
+
+// Nessun avviso quando cambia il mosaico: sulla preview compaiono solo i
+// messaggi di connessione persa e ritrovata.
+func TestPreviewShowsOnlyConnectionNotices(t *testing.T) {
+	s := newTestServer(t)
+	s.Update(func(st *State) {
+		st.Status = "ready"
+		st.Version = 4
+		st.Image = []byte("jpeg")
+	})
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/mosaic", nil))
+	body := rec.Body.String()
+
+	if strings.Contains(body, "build #") {
+		t.Error("la preview annuncia ancora il numero di build")
+	}
+	notices := regexp.MustCompile(`flash\("([^"]*)"`).FindAllStringSubmatch(body, -1)
+	allowed := map[string]bool{"live": true, "reconnecting…": true}
+	if len(notices) == 0 {
+		t.Fatal("nessun avviso di connessione trovato")
+	}
+	for _, n := range notices {
+		if !allowed[n[1]] {
+			t.Errorf("avviso non previsto sulla preview: %q", n[1])
+		}
 	}
 }
 

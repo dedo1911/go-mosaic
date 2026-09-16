@@ -6,6 +6,8 @@
 <meta name="color-scheme" content="dark">
 <title>go-mosaic — preview</title>
 <style>
+  /* Pagina da proiettare: niente testo né controlli, solo il mosaico. L'unico
+     elemento che può comparire è l'avviso di connessione persa. */
   html, body { height: 100%; }
   body {
     margin: 0; background: #000; color: #8f98a6;
@@ -22,7 +24,6 @@
     height: 100dvh;
     object-fit: contain;
   }
-  .empty { text-align: center; padding: 40px; }
   .badge {
     position: fixed; top: 12px; right: 12px;
     display: inline-flex; align-items: center; gap: 7px;
@@ -33,16 +34,13 @@
   .badge.show { opacity: 1; }
   .badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #3fcf8e; }
   .badge.off::before { background: #f2606a; }
-  a { color: #6ea8fe; }
 </style>
 </head>
 <body>
 {{if .HasImage}}
 <img id="shot" src="{{.ImageURL}}" alt="Generated mosaic">
-{{else}}
-<p class="empty" id="shot">{{.EmptyText}} <br><a href="/">back to the panel</a></p>
 {{end}}
-<div class="badge" id="badge">waiting</div>
+<div class="badge" id="badge"></div>
 
 <script>
 (function () {
@@ -55,31 +53,38 @@
   var known = {{.EventKey}};
   var lost = false;
 
+  // Avviso di connessione. "reconnecting…" resta finché la connessione non
+  // torna; "live" si dissolve da solo, e a dissolvenza finita si svuota anche
+  // il testo, così nella pagina non resta niente.
   function flash(text, off) {
     badge.textContent = text;
     badge.className = "badge show" + (off ? " off" : "");
     clearTimeout(timer);
-    if (!off) timer = setTimeout(function () { badge.className = "badge"; }, 1600);
+    if (off) return;
+    timer = setTimeout(function () {
+      badge.className = "badge";
+      timer = setTimeout(function () { badge.textContent = ""; }, 500);
+    }, 1600);
   }
 
   // Nuova versione pronta: si precarica l'immagine e la si sostituisce solo a
-  // download completato, così l'anteprima non lampeggia mai. Se l'immagine non
-  // c'è ancora (il server riavviato sta ancora generando) resta quella vecchia
+  // download completato, così l'anteprima non lampeggia mai. Nessun avviso:
+  // il cambio d'immagine è già l'informazione. Se l'immagine non c'è ancora
+  // (il server riavviato sta ancora generando) resta quella vecchia, o il nero,
   // fino all'evento successivo.
   function show(key) {
     var next = new Image();
     next.onload = function () {
       var current = document.getElementById("shot");
-      if (current && current.tagName === "IMG") {
+      if (current) {
         current.src = next.src;
-      } else {
-        var img = new Image();
-        img.id = "shot";
-        img.alt = "Generated mosaic";
-        img.src = next.src;
-        if (current) { current.replaceWith(img); } else { document.body.prepend(img); }
+        return;
       }
-      flash("build #" + key.slice(key.lastIndexOf("-") + 1));
+      var img = new Image();
+      img.id = "shot";
+      img.alt = "Generated mosaic";
+      img.src = next.src;
+      document.body.prepend(img);
     };
     next.src = "/image?v=" + encodeURIComponent(key);
   }
